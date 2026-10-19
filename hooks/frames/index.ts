@@ -29,7 +29,7 @@ export const FILMS: readonly { verb: string; file: string; hero: number }[] = [
   { verb: "Clauding", file: "clauding", hero: 70 },
   { verb: "Coalescing", file: "coalescing", hero: 46 },
   { verb: "Cogitating", file: "cogitating", hero: 51 },
-  { verb: "Combobulating", file: "combobulating", hero: 69 },
+  { verb: "Combobulating", file: "combobulating", hero: 23 },
   { verb: "Composing", file: "composing", hero: 46 },
   { verb: "Computing", file: "computing", hero: 44 },
   { verb: "Concocting", file: "concocting", hero: 44 },

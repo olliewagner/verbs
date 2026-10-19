@@ -23,13 +23,14 @@ const LEAF = PALETTE.leaf
 const POT = PALETTE.orange
 
 const PITCH = Math.asin(0.5)
-const SCALE = 4 * Math.SQRT2
-const CX = 32
-const CY = 17.5
+const SCALE = 3.5 * Math.SQRT2
+const CX = 37.5
+const CY = 13
 const YAW = Math.PI / 4
 const DESK_Y = -1.5
-const WALL_Z = -3.6
+const WALL_Z = -2.6
 const DESK_FRONT = 6
+const STEP = 3
 const UP: V3 = [0, Math.cos(PITCH), -Math.sin(PITCH)]
 const TOWARD: V3 = [0, Math.sin(PITCH), Math.cos(PITCH)]
 const GRAZE = [0.05, 0.4] as const
@@ -69,80 +70,80 @@ const SOLVED: Sticker[] = FACES.flatMap(([axis, side, colour]) => {
   return out
 })
 
-type Move = { axis: Axis; layer: number; turn: 1 | -1 }
-const SCRAMBLE: Move[] = [
-  { axis: 0, layer: 1, turn: 1 },
-  { axis: 1, layer: 1, turn: -1 },
-  { axis: 2, layer: 1, turn: 1 },
-  { axis: 0, layer: -1, turn: -1 },
-  { axis: 1, layer: 1, turn: 1 },
-]
-const SOLVE: Move[] = [...SCRAMBLE].reverse().map(m => ({ ...m, turn: m.turn === 1 ? -1 : 1 }))
+type Step = { kind: 'twist'; layer: number; turn: 1 | -1 } | { kind: 'tip'; dir: 1 | -1 }
+type Place = { state: Sticker[]; at: number }
 
 const snap = (v: V3): V3 => [Math.round(v[0]), Math.round(v[1]), Math.round(v[2])]
-const apply = (state: Sticker[], m: Move): Sticker[] =>
-  state.map(s => (s.p[m.axis] !== m.layer ? s : { ...s, p: snap(rotate(s.p, m.axis, (m.turn * TAU) / 4)), n: snap(rotate(s.n, m.axis, (m.turn * TAU) / 4)) }))
+const turn = (s: Sticker, axis: Axis, a: number): Sticker => ({ ...s, p: snap(rotate(s.p, axis, a)), n: snap(rotate(s.n, axis, a)) })
+function after({ state, at }: Place, step: Step): Place {
+  if (step.kind === 'twist') return { state: state.map(s => (s.p[1] === step.layer ? turn(s, 1, (step.turn * TAU) / 4) : s)), at }
+  return { state: state.map(s => turn(s, 2, (-step.dir * TAU) / 4)), at: at + step.dir * STEP }
+}
 
-const SCRAMBLED = SCRAMBLE.reduce(apply, SOLVED)
+const SHUFFLE: Step[] = [
+  { kind: 'twist', layer: 1, turn: 1 },
+  { kind: 'tip', dir: -1 },
+  { kind: 'twist', layer: 1, turn: -1 },
+  { kind: 'tip', dir: 1 },
+  { kind: 'twist', layer: 1, turn: 1 },
+]
+const SOLVE: Step[] = [...SHUFFLE].reverse().map(s => (s.kind === 'twist' ? { ...s, turn: s.turn === 1 ? -1 : 1 } : { ...s, dir: s.dir === 1 ? -1 : 1 }))
+const SCRAMBLED = SHUFFLE.reduce(after, { state: SOLVED, at: 0 })
 
 const SOLVE_AT = 2
-const TWISTS = [
-  { frames: 12, cock: 0.04 },
-  { frames: 13, cock: 0.06 },
-  { frames: 12, cock: 0.04 },
-  { frames: 12, cock: 0.04 },
-  { frames: 12, cock: 0.04 },
-]
-const TWIST_AT = TWISTS.map((_, k) => SOLVE_AT + TWISTS.slice(0, k).reduce((a, w) => a + w.frames, 0))
+const TWIST = { frames: 12, cock: 0.04 }
 const COCK = 2
-function twist(t: number, { frames, cock }: { frames: number; cock: number }): number {
-  if (t < COCK) return -cock * ease.out((t + 1) / COCK)
-  const u = (t - COCK + 1) / (frames - COCK)
-  return lerp(-cock, 1, (1 - Math.cos(Math.PI * u)) / 2)
+
+function twist(t: number): number {
+  if (t < COCK) return -TWIST.cock * ease.out((t + 1) / COCK)
+  const u = (t - COCK + 1) / (TWIST.frames - COCK)
+  return lerp(-TWIST.cock, 1, (1 - Math.cos(Math.PI * u)) / 2)
 }
-const HOP_AT = SOLVE_AT + TWISTS.reduce((a, w) => a + w.frames, 0)
-const WHIRLS = [3, 3, 3, 4, 6]
+const TIP = [-0.02, -0.04, -0.05, -0.02, 0.05, 0.16, 0.29, 0.4, 0.47, 0.5, 0.55, 0.65, 0.81, 1]
+const frames = (s: Step) => (s.kind === 'twist' ? TWIST.frames : TIP.length)
+const HOP_AT = SOLVE_AT + SOLVE.reduce((a, s) => a + frames(s), 0)
+const WHIRLS = [3, 3, 3, 4, 4]
 const SHUFFLE_AT = LOOP - 1 - WHIRLS.reduce((a, b) => a + b, 0)
 const SQUASH = [0.05, 0.1, 0.13, 0.14, 0.07, -0.03, -0.04, -0.02, -0.02, -0.03, 0.05, 0.02]
 const HOP = [0, 0, 0, 0, 0.07, 0.2, 0.3, 0.34, 0.29, 0.16, 0, 0]
 const SHINE_AT = HOP_AT
 const SHINE_FOR = 12
-const SHINE_WIDTH = 10
-const SHINE_REACH = 15 + SHINE_WIDTH
+const SHINE_WIDTH = 9
+const SHINE_REACH = 13 + SHINE_WIDTH
 
-type Pose = { state: Sticker[]; move?: Move; angle: number; hop: number; squash: number; shine: number }
-const still = (state: Sticker[]): Pose => ({ state, angle: 0, hop: 0, squash: 0, shine: 0 })
+type Pose = Place & { layer?: number; angle: number; tip?: { pivot: number; angle: number }; hop: number; squash: number; shine: number }
+const still = (place: Place): Pose => ({ ...place, angle: 0, hop: 0, squash: 0, shine: 0 })
+function moving(place: Place, step: Step, q: number): Pose {
+  if (step.kind === 'twist') return { ...still(place), layer: step.layer, angle: ((step.turn * TAU) / 4) * q }
+  const pivot = (q < 0 ? -step.dir : step.dir) * 1.5
+  return { ...still(place), tip: { pivot, angle: ((-step.dir * TAU) / 4) * q } }
+}
 function poseAt(f: number): Pose {
-  let state = SCRAMBLED
-  for (let k = 0; k < SOLVE.length; k++) {
-    const m = SOLVE[k]
-    if (!m) continue
-    const start = TWIST_AT[k] ?? 0
-    const w = TWISTS[k]
-    if (f < start || !w) return still(state)
+  let place: Place = SCRAMBLED
+  let start = SOLVE_AT
+  for (const step of SOLVE) {
     const t = f - start
-    if (t < w.frames) return { ...still(state), move: m, angle: ((m.turn * TAU) / 4) * twist(t, w) }
-    state = apply(state, m)
+    if (t < 0) return still(place)
+    if (t < frames(step)) return moving(place, step, step.kind === 'twist' ? twist(t) : (TIP[t] ?? 1))
+    place = after(place, step)
+    start += frames(step)
   }
   if (f < SHUFFLE_AT) {
     const t = f - HOP_AT
-    return { ...still(state), hop: HOP[t] ?? 0, squash: SQUASH[t] ?? 0, shine: beat(f, SHINE_AT, SHINE_AT + SHINE_FOR) }
+    return { ...still(place), hop: HOP[t] ?? 0, squash: SQUASH[t] ?? 0, shine: beat(f, SHINE_AT, SHINE_AT + SHINE_FOR) }
   }
-  let start = SHUFFLE_AT
-  for (let k = 0; k < SCRAMBLE.length; k++) {
-    const m = SCRAMBLE[k]
+  start = SHUFFLE_AT
+  for (const [k, step] of SHUFFLE.entries()) {
     const n = WHIRLS[k] ?? 1
-    if (!m) continue
     const t = f - start
     if (t < n) {
-      const isLast = k === SCRAMBLE.length - 1
       const u = (t + 0.5) / n
-      return { ...still(state), move: m, angle: ((m.turn * TAU) / 4) * (isLast ? Math.sin((Math.PI / 2) * u) : u) }
+      return moving(place, step, k === SHUFFLE.length - 1 ? Math.sin((Math.PI / 2) * u) : u)
     }
-    state = apply(state, m)
+    place = after(place, step)
     start += n
   }
-  return still(state)
+  return still(place)
 }
 function box(o: V3, d: V3, lo: V3, hi: V3): { t: number; axis: Axis; side: number } | undefined {
   let t0 = -Infinity
@@ -176,12 +177,18 @@ function box(o: V3, d: V3, lo: V3, hi: V3): { t: number; axis: Axis; side: numbe
 function toCube(o: V3, d: V3, pose: Pose): [V3, V3] {
   const k = 1 - pose.squash
   const wide = 1 + pose.squash * 0.5
-  const lift: V3 = [o[0], o[1] - pose.hop, o[2]]
-  const ro = rotate(lift, 1, -YAW)
-  const rd = rotate(d, 1, -YAW)
+  let p = rotate([o[0], o[1] - pose.hop, o[2]], 1, -YAW)
+  let v = rotate(d, 1, -YAW)
+  p = [p[0] - pose.at, p[1], p[2]]
+  if (pose.tip) {
+    const { pivot, angle } = pose.tip
+    const q = rotate([p[0] - pivot, p[1] - DESK_Y, p[2]], 2, -angle)
+    p = [q[0] + pivot, q[1] + DESK_Y, q[2]]
+    v = rotate(v, 2, -angle)
+  }
   return [
-    [ro[0] / wide, (ro[1] - DESK_Y) / k + DESK_Y, ro[2] / wide],
-    [rd[0] / wide, rd[1] / k, rd[2] / wide],
+    [p[0] / wide, (p[1] - DESK_Y) / k + DESK_Y, p[2] / wide],
+    [v[0] / wide, v[1] / k, v[2] / wide],
   ]
 }
 type CubeHit = { t: number; colour?: Colour; normal: V3; edge: number; screen: number }
@@ -194,10 +201,9 @@ function castCube(o: V3, d: V3, pose: Pose, index: ReadonlyMap<string, Colour>):
       for (let z = -1; z <= 1; z++) {
         if (x === 0 && y === 0 && z === 0) continue
         const p: V3 = [x, y, z]
-        const m = pose.move
-        const isTurning = m !== undefined && p[m.axis] === m.layer
-        const lo = isTurning && m ? rotate(co, m.axis, -pose.angle) : co
-        const ld = isTurning && m ? rotate(cd, m.axis, -pose.angle) : cd
+        const isTurning = y === pose.layer
+        const lo = isTurning ? rotate(co, 1, -pose.angle) : co
+        const ld = isTurning ? rotate(cd, 1, -pose.angle) : cd
         const hit = box(lo, ld, [x - 0.5, y - 0.5, z - 0.5], [x + 0.5, y + 0.5, z + 0.5])
         if (!hit || (best && hit.t >= best.t)) continue
         const n: V3 = [0, 0, 0]
@@ -206,7 +212,8 @@ function castCube(o: V3, d: V3, pose: Pose, index: ReadonlyMap<string, Colour>):
         const others = ([0, 1, 2] as Axis[]).filter(k => k !== hit.axis)
         const edge = Math.max(...others.map(k => Math.abs(q[k])))
         const key = `${x},${y},${z},${n[0]},${n[1]},${n[2]}`
-        let world = isTurning && m ? rotate(n, m.axis, pose.angle) : n
+        let world = isTurning ? rotate(n, 1, pose.angle) : n
+        if (pose.tip) world = rotate(world, 2, pose.tip.angle)
         world = rotate(world, 1, YAW)
         const centre = rotate([x + n[0] * 0.5, y + n[1] * 0.5, z + n[2] * 0.5], 1, YAW)
         const sx = centre[0] * SCALE
@@ -255,19 +262,21 @@ function render(): Int32Array[] {
           }
           continue
         }
+
         const tDesk = (o[1] - DESK_Y) / -d[1]
         const pDesk: V3 = [o[0] + d[0] * tDesk, DESK_Y, o[2] + d[2] * tDesk]
         if (pDesk[2] > WALL_Z && pDesk[2] < DESK_FRONT) {
           const shadow = inShadow(pDesk, pose)
-          const [cx, , cz] = rotate([pDesk[0], 0, pDesk[2]], 1, -YAW)
-          const near = Math.max(Math.abs(cx), Math.abs(cz))
-          const contact = near < 1.9 ? 1.2 * (1 - (near - 1.5) / 0.4) : 0
+          const [cp] = toCube(pDesk, SUN, pose)
+          const gap = Math.max(...cp.map(c => Math.abs(c) - 1.5))
+          const contact = gap < 0.4 ? 1.2 * (1 - gap / 0.4) : 0
           const grain = mod(pDesk[2] * 3.1 + Math.sin(pDesk[0] * 0.9) * 0.35, 1) < 0.18 ? -0.5 : 0
           const far = (pDesk[2] - WALL_Z) * 0.18
           const level = 3.2 + far + grain + (shadow ? -2.2 : 0) - clamp(contact, 0, 1.2) * (shadow ? 0.6 : 1)
           c.set(px, py, shade(DESK, level, px, py))
           continue
         }
+
         const tWall = (o[2] - WALL_Z) / -d[2]
         const pWall: V3 = [o[0] + d[0] * tWall, o[1] + d[1] * tWall, WALL_Z]
         const sun = blinds(pWall[0], pWall[1])
@@ -290,6 +299,7 @@ function render(): Int32Array[] {
       c.set(x + (y < 20 ? rustle : 0), y, shade(LEAF, lit, x, y))
       c.set(x + 1 + (y < 20 ? rustle : 0), y, shade(LEAF, lit - 0.6, x, y))
     }
+
     for (const p of particles(f, LOOP, 6, LOOP, 31)) {
       const x = 2 + p.r[0] * 18 + Math.sin(p.age * TAU * 2 + p.r[1] * 6) * 1.5
       const y = 1 + p.r[2] * 9 + Math.sin(p.age * TAU + p.r[3] * 6) * 1.2
@@ -304,12 +314,14 @@ function render(): Int32Array[] {
 export const scene: Scene = {
   verb: 'Combobulating',
   render,
-  hero: 69,
+  hero: 23,
   snaps: [
-    { frames: [76, 79], box: [29, 5, 44, 26], why: 'the scramble flurry: the right-hand layer turns a quarter in three frames' },
-    { frames: [79, 82], box: [20, 5, 44, 21], why: 'the scramble flurry: the top layer turns a quarter in three frames' },
-    { frames: [82, 85], box: [26, 8, 44, 30], why: 'the scramble flurry: the front face turns a quarter in three frames' },
-    { frames: [85, 89], box: [20, 8, 38, 30], why: 'the scramble flurry: the left face turns a quarter in four frames' },
-    { frames: [89, 93], box: [20, 5, 44, 21], why: 'the scramble flurry: the top layer turns its last quarter, slowing into the muddle' },
+    { frames: 10, box: [42, 6, 47, 14], why: 'the first twist: a sticker on the top layer swings round the right-hand corner into view' },
+    { frames: [21, 27], box: [20, 7, 36, 24], why: 'the tip forward: the front face turns down out of sight as the cube rises onto its edge, then the cube falls flat' },
+    { frames: 36, box: [18, 12, 23, 17], why: 'the second twist: a sticker on the top layer swings round the left-hand corner out of view' },
+    { frames: [46, 53], box: [20, 0, 48, 14], why: 'the tip home: the face on top turns out of sight as the cube rises onto its edge, then the cube falls flat' },
+    { frames: 62, box: [44, 6, 47, 10], why: 'the third twist: a sticker on the top layer swings round the right-hand corner into view' },
+    { frames: 76, box: [40, 21, 45, 23], why: 'the hop lands: the contact shadow under the cube closes as it meets the desk' },
+    { frames: [78, 94], box: [18, 0, 48, 22], why: 'the shuffle flurry: each twist and tip takes three or four frames' },
   ],
 }
