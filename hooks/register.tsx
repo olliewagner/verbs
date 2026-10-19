@@ -178,6 +178,7 @@ let isSpinnerOn = true
 let unnamedVerb: string | undefined
 let spinnerSize: Size = DEFAULT_SIZE
 let isAbout = false
+let aboutOver: string | undefined
 let isStill = false
 let glyphs = TEXT_GLYPHS
 let version: string | undefined
@@ -186,6 +187,7 @@ async function hasSfPro($: EngineInterface) {
   for (const font of [...SF_PRO_FONTS, ...SF_PRO_FONTS.map(f => f.replace('/Library', `${home}/Library`))]) {
     if (await $.fs.exists(font)) return true
   }
+
   return false
 }
 async function readVersion($: EngineInterface) {
@@ -202,7 +204,6 @@ async function recall($: EngineInterface, key: string): Promise<unknown> {
     return undefined
   }
 }
-
 async function keep($: EngineInterface, key: string, value: unknown) {
   try {
     await $.store.set(key, value)
@@ -213,8 +214,9 @@ async function setSize($: EngineInterface, size: Size) {
   await keep($, SIZE_KEY, size)
   $.ui.invalidate('ui.render')
 }
-function setAbout($: EngineInterface, isOn: boolean) {
+function setAbout($: EngineInterface, isOn: boolean, requestId?: string) {
   isAbout = isOn
+  aboutOver = isOn ? requestId : undefined
   if (!isOn) for (const icon of [...icons.values()]) icon.cancel()
   $.ui.invalidate('ui.render')
 }
@@ -371,6 +373,7 @@ export const register: Register = on => {
     const word = isUnnamed ? (unnamedVerb ?? '') : e.props.word
     const own = await next(word === e.props.word ? e : { ...e, props: { ...e.props, word } })
     if (e.surface !== 'terminal' || !isSpinnerOn) return own
+    if (isAbout && aboutOver !== e.requestId) setAbout($, false)
     const film = find(word)
     if (film === undefined || slug(film.verb) !== slug(word)) return own
     await readGlyph($)
@@ -381,7 +384,6 @@ export const register: Register = on => {
       const pages = await pagesOf($, film, size)
       if (pages.length === 0) return own
       await readMotion($)
-
       const latest = players.get(e.requestId)
       if (latest !== undefined && isCurrent(latest)) player = latest
       else if (isStill) {
@@ -411,7 +413,7 @@ export const register: Register = on => {
       <Box key="corner" flexDirection="column" justifyContent="flex-end" height={rows} marginLeft={1}>
         {!isAbout && larger !== undefined && press(GROW_KEY, ` ${glyphs.grow} `, () => void setSize($, larger))}
         {!isAbout && smaller !== undefined && press(SHRINK_KEY, ` ${glyphs.shrink} `, () => void setSize($, smaller))}
-        {isAbout ? press('about-back', glyphs.back, () => setAbout($, false)) : press(ABOUT_KEY, ` ${glyphs.info} `, () => setAbout($, true))}
+        {isAbout ? press('about-back', glyphs.back, () => setAbout($, false)) : press(ABOUT_KEY, ` ${glyphs.info} `, () => setAbout($, true, e.requestId))}
       </Box>
     )
     if (isAbout) {
