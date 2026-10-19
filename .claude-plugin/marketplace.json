@@ -1,0 +1,14 @@
+{
+  "name": "verbs",
+  "description": "verbs, a Claude Code mod of pixel-art flip books for the spinner verbs.",
+  "owner": {
+    "name": "Ollie Wagner"
+  },
+  "plugins": [
+    {
+      "name": "verbs",
+      "source": "./",
+      "description": "Pixel-art flip books of every spinner verb, played in the transcript and while Claude works"
+    }
+  ]
+}
