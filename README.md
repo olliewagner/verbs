@@ -34,3 +34,7 @@ Then restart Claude Code. Once a day the plugin reads the version published on G
 claude plugin uninstall verbs@verbs
 claude plugin marketplace remove verbs
 ```
+
+## License
+
+MIT. See `LICENSE`.
