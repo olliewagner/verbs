@@ -81,7 +81,7 @@ async function pagesOf($: EngineInterface, film: Film, size: Size = 'large'): Pr
   if (cache.size > 6 && oldest !== undefined) cache.delete(oldest)
   return pages
 }
-type Player = { cells: string; verb: string; size: Size; tick: number; frame: number; isPlaying: boolean; cancel: () => void }
+type Player = { cells: string; verb: string; size: Size; tick: number; frame: number; isPlaying: boolean; drawnAt?: number; cancel: () => void }
 type Page = { cells: string; verb: string; frame?: number }
 const players = new Map<string, Player>()
 function play(
@@ -97,6 +97,7 @@ function play(
   const stop = () => {
     player.isPlaying = false
     timer.cancel()
+    step = () => undefined
   }
   const timer = $.clock.every(FRAME_MS, () => {
     tick++
@@ -107,6 +108,7 @@ function play(
     player.cells = page.cells
     player.verb = page.verb
     player.frame = page.frame ?? tick
+    if (!isBlitting && tick - (player.drawnAt ?? tick) > 24) return stop()
     if (!isBlitting || isNewVerb) return $.ui.invalidate('ui.render')
     void $.ui.blit({ requestId, key: KEY, cells: page.cells }).then(result => {
       if (result.deny === undefined || !isBlitting) return
@@ -197,6 +199,38 @@ async function readVersion($: EngineInterface) {
     return undefined
   }
 }
+const LATEST_URL = 'https://raw.githubusercontent.com/olliewagner/verbs/main/.claude-plugin/plugin.json'
+const CHECKED_KEY = 'updateCheckedAt'
+const DAY_MS = 24 * 60 * 60 * 1000
+const CHECK_DELAY_MS = 5000
+
+function isLater(a: string, b: string): boolean {
+  const parse = (v: string) => /^(\d+)\.(\d+)\.(\d+)$/.exec(v.trim())?.slice(1).map(Number)
+  const x = parse(a)
+  const y = parse(b)
+  if (x === undefined || y === undefined) return false
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return (x[i] ?? 0) > (y[i] ?? 0)
+  return false
+}
+async function checkForUpdate($: EngineInterface) {
+  try {
+    if (version === undefined) return
+    const quiet = await $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC')
+    if (quiet !== undefined && quiet !== '') return
+    const now = await $.clock.now()
+    const checkedAt = await recall($, CHECKED_KEY)
+    if (typeof checkedAt === 'number' && now - checkedAt >= 0 && now - checkedAt < DAY_MS) return
+    await keep($, CHECKED_KEY, now)
+    const response = await $.http.fetch(LATEST_URL)
+    if (!response.ok) return
+    const latest = String(JSON.parse(response.text).version ?? '')
+    if (!isLater(latest, version)) return
+    $.ui.toast(
+      `verbs ${latest} is out; this is ${version}. To update, run claude plugin marketplace update verbs, then claude plugin update verbs@verbs, and restart Claude Code.`,
+      { timeoutMs: 15000 },
+    )
+  } catch {}
+}
 async function recall($: EngineInterface, key: string): Promise<unknown> {
   try {
     return await $.store.get(key)
@@ -204,6 +238,7 @@ async function recall($: EngineInterface, key: string): Promise<unknown> {
     return undefined
   }
 }
+
 async function keep($: EngineInterface, key: string, value: unknown) {
   try {
     await $.store.set(key, value)
@@ -220,7 +255,6 @@ function setAbout($: EngineInterface, isOn: boolean, requestId?: string) {
   if (!isOn) for (const icon of [...icons.values()]) icon.cancel()
   $.ui.invalidate('ui.render')
 }
-
 const iconCache = new Map<string, readonly string[]>()
 function iconPages(size: IconSize): readonly string[] {
   const key = `${size} ${glyph}`
@@ -279,6 +313,7 @@ export const register: Register = on => {
     spinnerSize = isSize(stored) ? stored : DEFAULT_SIZE
     glyphs = (await hasSfPro($)) ? SF_GLYPHS : TEXT_GLYPHS
     version = await readVersion($)
+    $.clock.after(CHECK_DELAY_MS, () => void checkForUpdate($))
     await $.command.register({
       name: 'verb',
       description: "Play a spinner verb's pixel-art flip book in the transcript",
@@ -291,6 +326,10 @@ export const register: Register = on => {
     })
     return next(e)
   })
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined && isAbout) setAbout($, false)
+    return next(e)
+  })
   on('command.run', { command: 'verb' }, async ($, e) => {
     if (await readColor($)) return { text: NO_COLOR_TEXT }
     if (FILMS.length === 0) return { text: 'No verbs are drawn yet.' }
@@ -298,7 +337,6 @@ export const register: Register = on => {
 
     return { text: film === undefined ? `No verb matches "${e.args.trim()}".` : `${film.verb}…` }
   })
-
   on('command.run', { command: 'verbs' }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
     if (arg === 'on' || arg === 'off') {
@@ -333,6 +371,8 @@ export const register: Register = on => {
       if (pages.length === 0) return next(e)
       player = players.get(e.requestId) ?? playOne($, e.requestId, film, pages)
     }
+    player.drawnAt = player.tick
+
     return <Raster key={KEY} {...cellsOf('large')} cells={player.cells} />
   })
 
@@ -354,6 +394,7 @@ export const register: Register = on => {
       if (pages.length === 0) return next(e)
       player = players.get(e.requestId) ?? playAll($, e.requestId, index, pages)
     }
+    player.drawnAt = player.tick
     const playing = player
     const index = FILMS.findIndex(film => film.verb === playing.verb)
     return (
@@ -363,10 +404,8 @@ export const register: Register = on => {
       </Box>
     )
   })
-
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
     if (e.surface === 'terminal' && (await readColor($))) return next(e)
-
     const isUnnamed = e.surface === 'terminal' && isSpinnerOn && e.props.word === ''
     if (!isUnnamed) unnamedVerb = undefined
     else unnamedVerb ??= FILMS[Math.floor(Math.random() * FILMS.length)]?.verb
@@ -384,6 +423,7 @@ export const register: Register = on => {
       const pages = await pagesOf($, film, size)
       if (pages.length === 0) return own
       await readMotion($)
+
       const latest = players.get(e.requestId)
       if (latest !== undefined && isCurrent(latest)) player = latest
       else if (isStill) {
@@ -408,7 +448,6 @@ export const register: Register = on => {
     const fitting = sizesThatFit(e.viewport)
     const larger = fitting[fitting.indexOf(size) + 1]
     const smaller = fitting[fitting.indexOf(size) - 1]
-
     const corner = (
       <Box key="corner" flexDirection="column" justifyContent="flex-end" height={rows} marginLeft={1}>
         {!isAbout && larger !== undefined && press(GROW_KEY, ` ${glyphs.grow} `, () => void setSize($, larger))}
