@@ -1,6 +1,6 @@
 # verbs
 
-![Claude Code at work with verbs: a pixel-art cauldron bubbling over a fire above the spinner line "Brewing…"](.github/verbs.gif)
+![Pixel-art pictures for spinner verbs drifting upward in three layers, each over its spinner line: Swirling, Nesting, Sock-hopping, Frolicking, Waddling, Galloping, Boogieing and more](.github/verbs.gif)
 
 A Claude Code plugin that plays a looping pixel-art picture above the spinner while Claude works, one for each of the spinner's 188 verbs.
 
