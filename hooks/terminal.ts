@@ -162,14 +162,16 @@ export function encode(px: Int32Array, width: number, height: number, glyph: num
 const CORNER_COLUMNS = 4
 const MOST_OF_HEIGHT = 0.4
 export function sizesThatFit(viewport: { columns: number; rows: number } | undefined): readonly Size[] {
-  const fitting = SIZE_ORDER.filter(size => {
+  return SIZE_ORDER.filter(size => {
     const { columns, rows } = cellsOf(size)
     return viewport === undefined || (columns + CORNER_COLUMNS <= viewport.columns && rows <= viewport.rows * MOST_OF_HEIGHT)
   })
-  return fitting.length > 0 ? fitting : ['small']
 }
-export function fit(preferred: Size, viewport: { columns: number; rows: number } | undefined): Size {
-  const fitting = sizesThatFit(viewport)
+export function fit(preferred: Size, viewport: { columns: number; rows: number } | undefined): Size | undefined {
   const limit = SIZE_ORDER.indexOf(preferred)
-  return [...fitting].reverse().find(size => SIZE_ORDER.indexOf(size) <= limit) ?? 'small'
+  return [...sizesThatFit(viewport)].reverse().find(size => SIZE_ORDER.indexOf(size) <= limit)
+}
+
+export function widestThatFits(viewport: { columns: number } | undefined): Size | undefined {
+  return [...SIZE_ORDER].reverse().find(size => viewport === undefined || cellsOf(size).columns <= viewport.columns)
 }

@@ -4,7 +4,7 @@ import { iconOf, type IconSize } from './about'
 import { readFrames } from './baked'
 import { FRAME_MS } from './engine'
 import { FILMS } from './frames'
-import { HALF_BLOCK, SIZE_ORDER, cellsOf, encode, encodeAt, fit, pairGlyph, sizesThatFit, type Size } from './terminal'
+import { HALF_BLOCK, SIZE_ORDER, cellsOf, encode, encodeAt, fit, pairGlyph, sizesThatFit, widestThatFits, type Size } from './terminal'
 
 const KEY = 'picture'
 const GROW_KEY = 'size-up'
@@ -28,21 +28,28 @@ const ABOUT_LAYOUT: Record<Size, { icon: IconSize; aboveName: number; aboveMaker
   medium: { icon: 'big', aboveName: 1, aboveMaker: 0 },
   small: { icon: 'small', aboveName: 0, aboveMaker: 0 },
 }
-const SF_GLYPHS = { info: '\u{100174}', grow: '\u{10017C}', shrink: '\u{10017D}', back: '\u{100189} back', external: '\u{10012F}' }
-const TEXT_GLYPHS: typeof SF_GLYPHS = { info: '(i)', grow: '+', shrink: '−', back: '‹ back', external: '↗' }
+const SF_GLYPHS = {
+  info: ' \u{100174} ',
+  grow: ' \u{10017C} ',
+  shrink: ' \u{10017D} ',
+  back: '\u{100189} back',
+  backAlone: ' \u{100189} ',
+  external: '\u{10012F}',
+}
+const TEXT_GLYPHS: typeof SF_GLYPHS = { info: '(i)', grow: ' + ', shrink: ' − ', back: '‹ back', backAlone: ' ‹ ', external: '↗' }
 const SF_PRO_FONTS = ['/Library/Fonts/SF-Pro-Text-Regular.otf', '/Library/Fonts/SF-Pro.ttf']
 const DEFAULT_SIZE: Size = 'medium'
 const isSize = (value: unknown): value is Size => SIZE_ORDER.includes(value as Size)
 const slug = (verb: string) => verb.normalize('NFD').replace(/[̀-ͯ']/g, '').toLowerCase()
 type Film = (typeof FILMS)[number]
 const BY_SLUG = new Map(FILMS.map(film => [slug(film.verb), film]))
-
 function find(name: string): Film | undefined {
   const s = slug(name.trim().replace(/…$/, ''))
   if (s === '') return undefined
 
   return BY_SLUG.get(s) ?? FILMS.find(film => slug(film.verb).startsWith(s)) ?? FILMS.find(film => slug(film.verb).includes(s))
 }
+
 let glyph: number | undefined
 async function readGlyph($: EngineInterface): Promise<void> {
   if (glyph !== undefined) return
@@ -52,7 +59,9 @@ async function readGlyph($: EngineInterface): Promise<void> {
     glyph = HALF_BLOCK
   }
 }
+
 const NO_COLOR_TEXT = 'The pictures are off because NO_COLOR is set.'
+
 const ALL_TEXT = `${FILMS.length} verbs, in the spinner's order.`
 let isColorless: boolean | undefined
 async function readColor($: EngineInterface): Promise<boolean> {
@@ -81,17 +90,29 @@ async function pagesOf($: EngineInterface, film: Film, size: Size = 'large'): Pr
   if (cache.size > 6 && oldest !== undefined) cache.delete(oldest)
   return pages
 }
-type Player = { cells: string; verb: string; size: Size; tick: number; frame: number; isPlaying: boolean; drawnAt?: number; cancel: () => void }
+
+type Player = {
+  cells: string
+  verb: string
+  size: Size
+  tick: number
+  frame: number
+  isPlaying: boolean
+  isStill?: boolean
+  drawnAt?: number
+  cancel: () => void
+}
 type Page = { cells: string; verb: string; frame?: number }
 const players = new Map<string, Player>()
+const refusal = (error: unknown) => ({ deny: String(error) })
 function play(
   $: EngineInterface,
   requestId: string,
   first: Page,
   step: (tick: number) => Page | undefined,
-  { size = 'large', isStoppedByRefusal = false }: { size?: Size; isStoppedByRefusal?: boolean } = {},
+  { size = 'large', isStoppedByRefusal = false, from = 0 }: { size?: Size; isStoppedByRefusal?: boolean; from?: number } = {},
 ): Player {
-  let tick = 0
+  let tick = from
   let isBlitting = true
   const player: Player = { frame: 0, ...first, size, tick, isPlaying: true, cancel: () => stop() }
   const stop = () => {
@@ -110,7 +131,7 @@ function play(
     player.frame = page.frame ?? tick
     if (!isBlitting && tick - (player.drawnAt ?? tick) > 24) return stop()
     if (!isBlitting || isNewVerb) return $.ui.invalidate('ui.render')
-    void $.ui.blit({ requestId, key: KEY, cells: page.cells }).then(result => {
+    void $.ui.blit({ requestId, key: KEY, cells: page.cells }).catch(refusal).then(result => {
       if (result.deny === undefined || !isBlitting) return
       isBlitting = false
       if (isStoppedByRefusal) return stop()
@@ -135,32 +156,34 @@ function hold(requestId: string, page: Page, size: Size): Player {
   players.set(requestId, player)
   return player
 }
-function playOne($: EngineInterface, requestId: string, film: Film, pages: readonly string[]): Player {
-  const page = (index: number) => ({ cells: pages[index % pages.length] ?? '', verb: film.verb })
+function playOne($: EngineInterface, requestId: string, film: Film, pages: readonly string[], size: Size, from = 0): Player {
+  const page = (index: number) => ({ cells: pages[index % pages.length] ?? '', verb: film.verb, frame: index % pages.length })
   const end = pages.length * (LOOPS - 1) + (film.hero % pages.length)
   const coast = Math.min(COAST_FRAMES, pages.length)
   const ticks = Math.round(coast / 0.6)
   const slowing = (2 * (ticks - coast)) / ticks ** 2
-  return play($, requestId, page(0), tick => {
+  const step = (tick: number) => {
     const into = tick - (end - coast)
     if (into <= 0) return page(tick)
     if (into > ticks) return undefined
     return page(end - coast + Math.min(coast, Math.round(into - (slowing * into ** 2) / 2)))
-  })
+  }
+  return play($, requestId, step(from) ?? page(end), step, { size, from })
 }
-function playAll($: EngineInterface, requestId: string, index: number, pages: readonly string[]): Player {
+function playAll($: EngineInterface, requestId: string, index: number, pages: readonly string[], size: Size, from?: number): Player {
   let start = 0
   let next: readonly string[] | undefined
   const readNext = () => {
     next = undefined
     const film = FILMS[index + 1]
     const wanted = index + 1
-    if (film !== undefined) void pagesOf($, film).then(read => (next = wanted === index + 1 ? read : next))
+    if (film !== undefined) void pagesOf($, film, size).then(read => (next = wanted === index + 1 ? read : next))
   }
   readNext()
-  let shown = { cells: pages[0] ?? '', verb: FILMS[index]?.verb ?? '' }
+  let shown: Page = { cells: pages[from ?? 0] ?? '', verb: FILMS[index]?.verb ?? '', frame: from ?? 0 }
+
   return play($, requestId, shown, ticks => {
-    const tick = spunUp(ticks)
+    const tick = from === undefined ? spunUp(ticks) : from + ticks
     while (tick - start >= pages.length) {
       if (FILMS[index + 1] === undefined) return undefined
       if (next === undefined) return shown
@@ -171,16 +194,16 @@ function playAll($: EngineInterface, requestId: string, index: number, pages: re
     }
     const film = FILMS[index]
     if (film === undefined) return undefined
-    shown = { cells: pages[tick - start] ?? '', verb: film.verb }
+    shown = { cells: pages[tick - start] ?? '', verb: film.verb, frame: tick - start }
     return shown
-  })
+  }, { size })
 }
 let isSpinnerOn = true
 
-let unnamedVerb: string | undefined
+const unnamedVerbs = new Map<string, string>()
 let spinnerSize: Size = DEFAULT_SIZE
-let isAbout = false
 let aboutOver: string | undefined
+
 let isStill = false
 let glyphs = TEXT_GLYPHS
 let version: string | undefined
@@ -189,7 +212,6 @@ async function hasSfPro($: EngineInterface) {
   for (const font of [...SF_PRO_FONTS, ...SF_PRO_FONTS.map(f => f.replace('/Library', `${home}/Library`))]) {
     if (await $.fs.exists(font)) return true
   }
-
   return false
 }
 async function readVersion($: EngineInterface) {
@@ -203,13 +225,13 @@ const LATEST_URL = 'https://raw.githubusercontent.com/olliewagner/verbs/main/.cl
 const CHECKED_KEY = 'updateCheckedAt'
 const DAY_MS = 24 * 60 * 60 * 1000
 const CHECK_DELAY_MS = 5000
-
 function isLater(a: string, b: string): boolean {
   const parse = (v: string) => /^(\d+)\.(\d+)\.(\d+)$/.exec(v.trim())?.slice(1).map(Number)
   const x = parse(a)
   const y = parse(b)
   if (x === undefined || y === undefined) return false
   for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return (x[i] ?? 0) > (y[i] ?? 0)
+
   return false
 }
 async function checkForUpdate($: EngineInterface) {
@@ -238,7 +260,6 @@ async function recall($: EngineInterface, key: string): Promise<unknown> {
     return undefined
   }
 }
-
 async function keep($: EngineInterface, key: string, value: unknown) {
   try {
     await $.store.set(key, value)
@@ -249,10 +270,9 @@ async function setSize($: EngineInterface, size: Size) {
   await keep($, SIZE_KEY, size)
   $.ui.invalidate('ui.render')
 }
-function setAbout($: EngineInterface, isOn: boolean, requestId?: string) {
-  isAbout = isOn
-  aboutOver = isOn ? requestId : undefined
-  if (!isOn) for (const icon of [...icons.values()]) icon.cancel()
+function setAbout($: EngineInterface, requestId: string | undefined) {
+  aboutOver = requestId
+  if (requestId === undefined) for (const icon of [...icons.values()]) icon.cancel()
   $.ui.invalidate('ui.render')
 }
 const iconCache = new Map<string, readonly string[]>()
@@ -284,7 +304,7 @@ function playIcon($: EngineInterface, requestId: string, size: IconSize): IconPl
     const cells = pages[tick % pages.length] ?? ''
     if (cells === icon.cells) return
     icon.cells = cells
-    void $.ui.blit({ requestId, key: ICON_KEY, cells }).then(result => {
+    void $.ui.blit({ requestId, key: ICON_KEY, cells }).catch(refusal).then(result => {
       if (result.deny !== undefined) icon.cancel()
     })
   })
@@ -298,6 +318,7 @@ async function readMotion($: EngineInterface) {
     isStill = false
   }
 }
+
 const OPENERS: readonly (readonly string[])[] = [['open'], ['xdg-open'], ['rundll32.exe', 'url.dll,FileProtocolHandler']]
 async function openSite($: EngineInterface) {
   for (const opener of OPENERS) {
@@ -326,15 +347,18 @@ export const register: Register = on => {
     })
     return next(e)
   })
+
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined && isAbout) setAbout($, false)
+    if (aboutOver !== undefined && (e.agentId === undefined || e.agentId === aboutOver)) setAbout($, undefined)
+    const still = e.agentId === undefined ? [...players.values()].filter(player => player.isStill && player.isPlaying) : []
+    for (const player of still) player.cancel()
+    if (still.length > 0) $.ui.invalidate('ui.render')
     return next(e)
   })
   on('command.run', { command: 'verb' }, async ($, e) => {
     if (await readColor($)) return { text: NO_COLOR_TEXT }
     if (FILMS.length === 0) return { text: 'No verbs are drawn yet.' }
     const film = e.args.trim() === '' ? FILMS[Math.floor(Math.random() * FILMS.length)] : find(e.args)
-
     return { text: film === undefined ? `No verb matches "${e.args.trim()}".` : `${film.verb}…` }
   })
   on('command.run', { command: 'verbs' }, async ($, e) => {
@@ -363,19 +387,26 @@ export const register: Register = on => {
     if (e.surface !== 'terminal' || (await readColor($))) return next(e)
     const film = FILMS.find(candidate => e.props.text.endsWith(`${candidate.verb}…`))
     if (film === undefined) return next(e)
+    const size = widestThatFits(e.viewport)
+    if (size === undefined) return next(e)
     await readGlyph($)
     const { Raster } = $.ui.resolve(e)
     let player = players.get(e.requestId)
-    if (player === undefined) {
-      const pages = await pagesOf($, film)
+    if (player === undefined || player.size !== size) {
+      const pages = await pagesOf($, film, size)
       if (pages.length === 0) return next(e)
-      player = players.get(e.requestId) ?? playOne($, e.requestId, film, pages)
+      const latest = players.get(e.requestId)
+      if (latest !== undefined && latest.size === size) player = latest
+      else if (latest !== undefined && !latest.isPlaying) {
+        player = hold(e.requestId, { cells: pages[film.hero % pages.length] ?? '', verb: film.verb, frame: film.hero }, size)
+      } else {
+        latest?.cancel()
+        player = playOne($, e.requestId, film, pages, size, latest?.tick)
+      }
     }
     player.drawnAt = player.tick
-
-    return <Raster key={KEY} {...cellsOf('large')} cells={player.cells} />
+    return <Raster key={KEY} {...cellsOf(size)} cells={player.cells} />
   })
-
   on('ui.render', { component: 'CommandOutput', props: { command: 'verbs' } }, async ($, e, next) => {
     const firstFilm = FILMS[0]
     if (e.surface !== 'terminal' || !e.props.text.endsWith(ALL_TEXT) || firstFilm === undefined || (await readColor($))) {
@@ -383,23 +414,34 @@ export const register: Register = on => {
     }
     await readGlyph($)
     const { Box, Raster, Text } = $.ui.resolve(e)
+    const fitting = widestThatFits(e.viewport)
+    const size = fitting ?? 'small'
     let player = players.get(e.requestId)
-    if (player === undefined) {
-      let index = 0
-      let pages = await pagesOf($, firstFilm)
-      for (let film = FILMS[1]; pages.length === 0 && film !== undefined; film = FILMS[index + 1]) {
+    if (player === undefined || player.size !== size) {
+      const was = player
+      let index = was === undefined ? 0 : Math.max(0, FILMS.findIndex(film => film.verb === was.verb))
+      let pages = await pagesOf($, FILMS[index] ?? firstFilm, size)
+      for (let film = FILMS[index + 1]; pages.length === 0 && film !== undefined; film = FILMS[index + 1]) {
         index++
-        pages = await pagesOf($, film)
+        pages = await pagesOf($, film, size)
       }
       if (pages.length === 0) return next(e)
-      player = players.get(e.requestId) ?? playAll($, e.requestId, index, pages)
+      const latest = players.get(e.requestId)
+      const verb = FILMS[index]?.verb ?? ''
+      const frame = latest?.verb === verb ? latest.frame : undefined
+      if (latest !== undefined && latest.size === size) player = latest
+      else if (latest !== undefined && !latest.isPlaying) player = hold(e.requestId, { cells: pages[(frame ?? 0) % pages.length] ?? '', verb, frame }, size)
+      else {
+        latest?.cancel()
+        player = playAll($, e.requestId, index, pages, size, frame)
+      }
     }
     player.drawnAt = player.tick
     const playing = player
     const index = FILMS.findIndex(film => film.verb === playing.verb)
     return (
       <Box flexDirection="column">
-        <Raster key={KEY} {...cellsOf('large')} cells={player.cells} />
+        {fitting !== undefined && <Raster key={KEY} {...cellsOf(fitting)} cells={player.cells} />}
         <Text dimColor>{`${player.verb}…  ${index + 1} of ${FILMS.length}`}</Text>
       </Box>
     )
@@ -407,31 +449,36 @@ export const register: Register = on => {
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
     if (e.surface === 'terminal' && (await readColor($))) return next(e)
     const isUnnamed = e.surface === 'terminal' && isSpinnerOn && e.props.word === ''
-    if (!isUnnamed) unnamedVerb = undefined
-    else unnamedVerb ??= FILMS[Math.floor(Math.random() * FILMS.length)]?.verb
-    const word = isUnnamed ? (unnamedVerb ?? '') : e.props.word
+    let unnamed = unnamedVerbs.get(e.requestId)
+    if (!isUnnamed) unnamedVerbs.delete(e.requestId)
+    else if (unnamed === undefined) {
+      unnamed = FILMS[Math.floor(Math.random() * FILMS.length)]?.verb
+      if (unnamed !== undefined) unnamedVerbs.set(e.requestId, unnamed)
+    }
+    const word = isUnnamed ? (unnamed ?? '') : e.props.word
     const own = await next(word === e.props.word ? e : { ...e, props: { ...e.props, word } })
     if (e.surface !== 'terminal' || !isSpinnerOn) return own
-    if (isAbout && aboutOver !== e.requestId) setAbout($, false)
     const film = find(word)
     if (film === undefined || slug(film.verb) !== slug(word)) return own
-    await readGlyph($)
     const size = fit(spinnerSize, e.viewport)
+    if (size === undefined) return own
+    await readGlyph($)
+    const isAbout = aboutOver === e.requestId
     const isCurrent = (current: Player) => current.verb === film.verb && current.size === size && current.isPlaying
     let player = players.get(e.requestId)
     if (player === undefined || !isCurrent(player)) {
       const pages = await pagesOf($, film, size)
       if (pages.length === 0) return own
       await readMotion($)
-
       const latest = players.get(e.requestId)
       if (latest !== undefined && isCurrent(latest)) player = latest
       else if (isStill) {
         latest?.cancel()
         player = hold(e.requestId, { cells: pages[film.hero % pages.length] ?? '', verb: film.verb, frame: film.hero }, size)
+        player.isStill = true
       } else {
+        const from = latest?.verb === film.verb && latest.isPlaying ? latest.frame : undefined
         latest?.cancel()
-        const from = latest?.verb === film.verb ? latest.frame : undefined
         const frameAt = (tick: number) => (from === undefined ? spunUp(tick) : from + tick)
         const page = (tick: number) => ({ cells: pages[frameAt(tick) % pages.length] ?? '', verb: film.verb, frame: frameAt(tick) })
         player = play($, e.requestId, page(0), tick => (tick < SPINNER_FRAMES ? page(tick) : undefined), {
@@ -448,14 +495,16 @@ export const register: Register = on => {
     const fitting = sizesThatFit(e.viewport)
     const larger = fitting[fitting.indexOf(size) + 1]
     const smaller = fitting[fitting.indexOf(size) - 1]
+    const back = e.viewport === undefined || columns + 1 + [...glyphs.back].length <= e.viewport.columns ? glyphs.back : glyphs.backAlone
     const corner = (
       <Box key="corner" flexDirection="column" justifyContent="flex-end" height={rows} marginLeft={1}>
-        {!isAbout && larger !== undefined && press(GROW_KEY, ` ${glyphs.grow} `, () => void setSize($, larger))}
-        {!isAbout && smaller !== undefined && press(SHRINK_KEY, ` ${glyphs.shrink} `, () => void setSize($, smaller))}
-        {isAbout ? press('about-back', glyphs.back, () => setAbout($, false)) : press(ABOUT_KEY, ` ${glyphs.info} `, () => setAbout($, true, e.requestId))}
+        {!isAbout && larger !== undefined && press(GROW_KEY, glyphs.grow, () => void setSize($, larger))}
+        {!isAbout && smaller !== undefined && press(SHRINK_KEY, glyphs.shrink, () => void setSize($, smaller))}
+        {isAbout ? press('about-back', back, () => setAbout($, undefined)) : press(ABOUT_KEY, glyphs.info, () => setAbout($, e.requestId))}
       </Box>
     )
     if (isAbout) {
+
       const layout = ABOUT_LAYOUT[player.size]
       let icon = icons.get(e.requestId)
       if (icon?.size !== layout.icon) {
